@@ -1,0 +1,21 @@
+apiVersion: v2
+name: slopbot-pod
+description: >
+  SlopBot AI per-stream agent PodTemplate for namazu-conductor: the element
+  worker (Twitch chat/EventSub bot persisting through the ELM's MCP surface),
+  a headless OpenCode v2 sidecar for inference (loopback-only), and the OIDC
+  security proxy that is the sidecar's only door. The pod never has a public
+  endpoint — the ELM is the go-between.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+home: https://github.com/NamazuStudios/slopbot-ai-pod
+sources:
+  - https://github.com/NamazuStudios/slopbot-ai-pod
+  - https://github.com/NamazuStudios/namazu-conductor
+keywords:
+  - namazu
+  - conductor
+  - slopbot
+  - opencode
+  - elements

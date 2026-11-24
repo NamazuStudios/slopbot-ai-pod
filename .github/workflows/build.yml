@@ -1,0 +1,195 @@
+name: Build, test, and push images
+
+# Prerequisites provisioned out-of-band (see docs/SPEC.md "Implementation notes"):
+# - The ELEMENT_RELEASE_TAG repo Variable, pinning the slopbot-ai-element
+#   release whose artifacts (worker.jar + element.elm) the worker image
+#   builds from — the build fails loudly without it, by design.
+# - GHCR push access for this repo (the default GITHUB_TOKEN with
+#   packages:write covers org-owned ghcr.io/namazustudios/* repos).
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "docker/**"
+      - "proxy/**"
+      - "worker/**"
+      - "helm/**"
+      - ".github/workflows/build.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "docker/**"
+      - "proxy/**"
+      - "worker/**"
+      - "helm/**"
+      - ".github/workflows/build.yml"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_PREFIX: ghcr.io/namazustudios
+
+jobs:
+  # -- Job 1: the security proxy's unit tests (the validation matrix). ----
+  proxy-test:
+    name: proxy lint + test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: proxy/package-lock.json
+
+      - name: Lint (node --check on every source file)
+        working-directory: proxy
+        run: npm run lint
+
+      - name: Test (validation matrix, JWKS TTL/rotation, fail-closed, forwarding)
+        working-directory: proxy
+        run: npm ci --ignore-scripts && npm test
+
+  # -- Job 2: build + push the three images to ghcr (main + dispatch). ----
+  # Immutable sha-<commit> tags, plus `latest` on main only. The platform
+  # pins by sha tag or digest — never a floating tag.
+  docker:
+    name: build + push (${{ matrix.image }})
+    needs: [proxy-test]
+    # Publishing stays main-only; the PR trigger exists for the test/lint
+    # jobs (mirroring the namazu-agent chart's split).
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      matrix:
+        include:
+          - image: slopbot-worker
+            dockerfile: docker/worker/Dockerfile
+          - image: slopbot-opencode
+            dockerfile: docker/opencode/Dockerfile
+          - image: slopbot-proxy
+            dockerfile: docker/proxy/Dockerfile
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Fail loud without the ELEMENT_RELEASE_TAG Variable
+        # The worker image build pins the element release by repo Variable.
+        # Missing it is a configuration error — fail with a visible message,
+        # not a confusing curl 404 deep in the Dockerfile.
+        if: matrix.image == 'slopbot-worker'
+        run: |
+          if [ -z "${{ vars.ELEMENT_RELEASE_TAG }}" ]; then
+            echo "::error::ELEMENT_RELEASE_TAG repo Variable is not set — the worker image build cannot pin the slopbot-ai-element release artifacts (worker.jar + element.elm). Set it in the repo's Settings > Secrets and variables > Actions > Variables."
+            exit 1
+          fi
+          echo "Building worker from element release ${{ vars.ELEMENT_RELEASE_TAG }}"
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push (${{ matrix.image }})
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          platforms: linux/amd64,linux/arm64
+          push: true
+          provenance: false
+          build-args: ${{ matrix.image == 'slopbot-worker' && format('ELEMENT_RELEASE_TAG={0}', vars.ELEMENT_RELEASE_TAG) || '' }}
+          tags: |
+            ${{ env.IMAGE_PREFIX }}/${{ matrix.image }}:sha-${{ github.sha }}
+            ${{ env.IMAGE_PREFIX }}/${{ matrix.image }}:latest
+
+      - name: Record digest
+        run: echo "${{ env.IMAGE_PREFIX }}/${{ matrix.image }}:sha-${{ github.sha }}@${{ steps.build.outputs.digest }}" >> digests.txt
+
+      - name: Digest report
+        run: cat digests.txt >> "$GITHUB_STEP_SUMMARY"
+
+  # -- Job 3: helm lint + template sanity, with hard assertions. -----------
+  helm-check:
+    name: helm lint + template assertions
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+
+      - name: helm lint
+        run: |
+          helm lint helm/slopbot-pod \
+            --set elementsUrl=https://tenant.example.invalid \
+            --set audience=slopbot-pod \
+            --set hyperApiKeySecretName=charm-hyper
+
+      - name: Render the pod template
+        run: |
+          helm template test helm/slopbot-pod \
+            --set elementsUrl=https://tenant.example.invalid \
+            --set audience=slopbot-pod \
+            --set hyperApiKeySecretName=charm-hyper > /tmp/rendered.yaml
+
+      - name: Assert the rendered pod template carries the contract
+        run: |
+          set -eu
+          # Conductor annotations present.
+          grep -q 'namazu.conductor/display-name:' /tmp/rendered.yaml
+          grep -q 'namazu.conductor/workload-kind: job' /tmp/rendered.yaml
+          grep -q 'namazu.conductor/backoff-limit:' /tmp/rendered.yaml
+          grep -q 'namazu.conductor/expose-ports:' /tmp/rendered.yaml
+          # No service-account token, ever (binding).
+          grep -q 'automountServiceAccountToken: false' /tmp/rendered.yaml
+          # Exactly the three containers, non-root, read-only rootfs where required.
+          for c in worker opencode proxy; do
+            grep -q "name: $c" /tmp/rendered.yaml
+            grep -q "runAsUser: 1000" /tmp/rendered.yaml
+          done
+          test "$(grep -cE '^      - name: (worker|opencode|proxy)$' /tmp/rendered.yaml)" = 3
+          grep -q 'readOnlyRootFilesystem: true' /tmp/rendered.yaml
+          # NetworkPolicy rendered alongside, default-deny both ways.
+          grep -q 'kind: NetworkPolicy' /tmp/rendered.yaml
+          grep -q 'policyTypes:' /tmp/rendered.yaml
+          grep -q '169.254.169.254/32' /tmp/rendered.yaml
+          # The Hyper key arrives by secret reference, never embedded.
+          grep -q 'secretName: charm-hyper' /tmp/rendered.yaml
+          ! grep -qE 'HYPER_API_KEY=|hyperApiKey:|apiKey: "[A-Za-z0-9_-]{20,}"' /tmp/rendered.yaml
+          echo "chart contract assertions passed"
+
+      - name: Assert the render FAILS without the required values
+        # Fail-loud convention (#92): a missing trust anchor or Hyper key
+        # must abort the render, not dispatch a half-configured pod.
+        run: |
+          set -eu
+          if helm template test helm/slopbot-pod --set audience=slopbot-pod --set hyperApiKeySecretName=charm-hyper > /dev/null 2>&1; then
+            echo "::error::chart rendered WITHOUT elementsUrl — the fail-loud guard is broken"
+            exit 1
+          fi
+          if helm template test helm/slopbot-pod --set elementsUrl=https://tenant.example.invalid --set audience=slopbot-pod > /dev/null 2>&1; then
+            echo "::error::chart rendered WITHOUT hyperApiKeySecretName — the fail-loud guard is broken"
+            exit 1
+          fi
+          echo "fail-loud guards hold"

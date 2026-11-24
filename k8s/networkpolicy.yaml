@@ -1,0 +1,84 @@
+# SlopBot AI per-stream agent pod — NetworkPolicy (static standalone copy).
+#
+# This is the chart-rendered default (helm/slopbot-pod/templates/
+# networkpolicy.yaml with default values) for out-of-band application; the
+# chart is the source of truth and renders this same policy values-driven.
+#
+# Shape: default-deny BOTH directions for the pod; the explicit allows are
+# the whole story. NetworkPolicy has no "explicit deny" primitive — the
+# metadata endpoint and cluster-internal-range denies ride ipBlock `except`
+# entries on the otherwise-allowed internet egress, and the default-deny
+# covers everything no rule matches.
+#
+#   allowed egress: DNS (kube-dns, udp/tcp 53), ELM MCP/REST (tcp 8080/443),
+#   EventSub (tcp 443), Twitch IRC (tcp 6667/6697)
+#   denied egress: everything else — notably 169.254.169.254 (metadata) and
+#   the cluster-internal range (except the ELM, re-allowed below via
+#   networkPolicy.elmCidr when the ELM is in-cluster)
+#   allowed ingress: ELM -> proxy port (8080, OIDC-gated inference) and
+#   ELM -> relay port (8090, events), from same-namespace pods by default
+#
+# Proxy->OpenCode is loopback inside the pod's shared network namespace —
+# not a NetworkPolicy concern.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: slopbot-pod
+  labels:
+    app.kubernetes.io/name: slopbot-pod
+    slopbot.ai/component: agent-pod
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: slopbot-pod
+  policyTypes:
+    - Ingress
+    - Egress
+
+  ingress:
+    # ELM -> proxy (inference) and ELM -> relay (events). Default: any pod
+    # in this namespace (the ELM runs alongside the dispatched jobs); pin
+    # the ELM's own podSelector/namespaceSelector/ipBlock peers for a
+    # tighter story.
+    - from:
+        - podSelector: {}
+      ports:
+        - protocol: TCP
+          port: 8080
+        - protocol: TCP
+          port: 8090
+
+  egress:
+    # DNS (kube-dns only).
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+
+    # The internet egress: the worker's outbound needs (ELM MCP/REST over
+    # 8080/443, EventSub wss 443, Twitch IRC 6667/6697) with the metadata
+    # endpoint and the cluster-internal range carved OUT. Re-allow the ELM's
+    # in-cluster address explicitly (below) when it lives in-cluster.
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 169.254.169.254/32
+              - 10.0.0.0/8   # cluster-internal (override per cluster; chart value networkPolicy.clusterInternalCidr)
+      ports:
+        - protocol: TCP
+          port: 8080
+        - protocol: TCP
+          port: 443
+        - protocol: TCP
+          port: 6667
+        - protocol: TCP
+          port: 6697

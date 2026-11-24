@@ -1,0 +1,12 @@
+# Node
+node_modules/
+npm-debug.log
+
+# Build/scratch
+dist/
+target/
+*.elm.tmp
+
+# Local env — never commit secrets (no exceptions; see docs/SPEC.md)
+.env
+.env.*

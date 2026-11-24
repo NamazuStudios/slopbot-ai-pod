@@ -1,0 +1,101 @@
+{{/*
+NetworkPolicy for the SlopBot per-stream agent pod — rendered alongside the
+pod template (and mirrored as a static manifest in k8s/networkpolicy.yaml).
+
+Default-deny BOTH directions for the pod; everything else is an explicit
+allow below. NetworkPolicy has no "explicit deny" primitive — the metadata
+endpoint and cluster-internal-range denies are carried by ipBlock `except`
+entries on the otherwise-allowed internet egress, and by the default-deny
+for everything no rule matches.
+
+Proxy->OpenCode never appears here: it is loopback inside the pod's shared
+network namespace, which NetworkPolicy does not govern (by design).
+*/}}
+{{- if .Values.networkPolicy.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "slopbot-pod.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "slopbot-pod.labels" . | nindent 4 }}
+spec:
+  # Matches the pod template's own labels — the dispatched Job's pods carry
+  # the template's template.metadata.labels.
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "slopbot-pod.name" . }}
+  policyTypes:
+    - Ingress
+    - Egress
+
+  ingress:
+    # ELM -> proxy (inference, OIDC-gated) and ELM -> relay (events):
+    # sources are .Values.networkPolicy.ingressFrom (default: any pod in
+    # this namespace — pin the ELM's own peers for a tighter story).
+    {{- with .Values.networkPolicy.ingressFrom }}
+    - from:
+        {{- toYaml . | nindent 8 }}
+      ports:
+        - protocol: TCP
+          port: {{ $.Values.ports.proxy }}
+        - protocol: TCP
+          port: {{ $.Values.ports.relay }}
+    {{- end }}
+
+  egress:
+    # DNS (kube-dns only).
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.networkPolicy.dnsNamespace }}
+          podSelector:
+            matchLabels:
+              {{- range $k, $v := .Values.networkPolicy.dnsSelector }}
+              {{ $k }}: {{ $v }}
+              {{- end }}
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+
+    {{- /* The internet egress: the worker's outbound needs (ELM MCP/REST
+    over 8080/443, EventSub wss 443, Twitch IRC 6667/6697) with the metadata
+    endpoint and the cluster-internal range carved OUT. */}}
+    {{- $except := list (printf "169.254.169.254/32") }}
+    {{- if .Values.networkPolicy.clusterInternalCidr }}
+    {{- $except = append $except .Values.networkPolicy.clusterInternalCidr }}
+    {{- end }}
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              {{- range $except }}
+              - {{ . }}
+              {{- end }}
+      ports:
+        # ELM MCP/REST (8080 in-cluster convention, 443 for the https path).
+        - protocol: TCP
+          port: 8080
+        - protocol: TCP
+          port: 443
+        # Twitch IRC (6667 plain / 6697 TLS) + EventSub (wss, 443 above).
+        - protocol: TCP
+          port: 6667
+        - protocol: TCP
+          port: 6697
+
+    {{- if .Values.networkPolicy.elmCidr }}
+    # The ELM's in-cluster address (its Service CIDR/IP), re-allowed after
+    # the cluster-internal carve-out above — MCP/REST only.
+    - to:
+        - ipBlock:
+            cidr: {{ .Values.networkPolicy.elmCidr }}
+      ports:
+        - protocol: TCP
+          port: 8080
+        - protocol: TCP
+          port: 443
+    {{- end }}
+{{- end }}

@@ -1,0 +1,157 @@
+# Default values for the slopbot-pod chart.
+#
+# This chart renders a namazu-conductor **PodTemplate**: installing it only
+# registers the template — nothing runs until the ELM issues Conductor
+# instructions that dispatch a job against it (Conductor's kubernetes driver
+# discovers the template via the conductor.jobSet label and drives execution
+# off the namazu.conductor/* annotations, exactly like the namazu-agent
+# chart). The ELM's dispatch injects the per-stream env allow-list into the
+# PRIMARY (worker) container; this chart defines the pod's shape around that
+# injection, and never embeds a secret itself.
+
+# -- Fields conductor's Kubernetes provider reads directly off the
+# PodTemplate's labels/annotations (mirroring the namazu-agent chart).
+conductor:
+  # Must match the conductor instance's configured
+  # `dev.getelements.conductor.kubernetes.job.set` — the PodTemplate is
+  # discovered by this label. Fail loud on empty (see #92's convention).
+  jobSet: "default"
+  # Retry budget for a dispatched job (namazu.conductor/backoff-limit ->
+  # spec.backoffLimit). The pod tolerates preemption and exits 0 after the
+  # post-stream linger — Conductor retries until that successful exit, so
+  # the budget only has to absorb scheduling/preemption noise.
+  backoffLimit: 5
+  # The pod never has a public IP or endpoint (binding decision), so the
+  # only port worth exposing is the worker's relay webserver — and only as
+  # a CLUSTER-INTERNAL ClusterIP the ELM connects to. Never a LoadBalancer,
+  # never a reserved subdomain.
+  exposePorts: "8090/tcp"
+  serviceType: ClusterIP
+  terminalJob: true
+  # Human label/description for the dispatched job in Conductor's UI.
+  displayName: "SlopBot AI worker"
+  description: >-
+    SlopBot AI per-stream agent: element worker (Twitch chat + EventSub
+    triggers, MCP persistence, relay for the ELM), a headless OpenCode v2
+    sidecar for inference behind the OIDC security proxy. Injected env is
+    the ELM's dispatch allow-list; the Hyper inference key comes from the
+    namespace secret referenced below. No service-account token, no cluster
+    credentials, no public endpoint.
+
+# -- The bound Elements instance (the ELM's own deployment) and this pod's
+# OIDC identity. REQUIRED — fail loud when unset (#92): the security proxy
+# anchors its entire trust chain on these two values.
+elementsUrl: ""   # e.g. https://<tenant>.namazustudios.com — the OIDC issuer
+audience: ""      # the OIDC audience identifying THIS pod (the proxy's 403/401 line)
+
+# -- The ELM's MCP endpoint, for the OpenCode sidecar's MCP config. The
+# worker gets its own SLOP_MCP_URL from the ELM's dispatch injection (it is
+# the primary container); the sidecar cannot, so the chart carries the value
+# when the sidecar's agent should reach MCP directly. Empty renders nothing.
+mcpUrl: ""
+
+# -- Images (built by .github/workflows/build.yml, pushed to ghcr). Tags are
+# pinned per dispatch by the ELM (sha-<commit> — immutable; `latest` is a
+# convenience default the platform must not rely on: pin by sha tag or
+# digest, never a floating tag). Empty tag -> the chart's own AppVersion.
+image:
+  registry: ghcr.io/namazustudios
+  pullPolicy: IfNotPresent
+  worker:
+    repository: slopbot-worker
+    tag: ""
+  opencode:
+    repository: slopbot-opencode
+    tag: ""
+  proxy:
+    repository: slopbot-proxy
+    tag: ""
+
+# -- Ports (fixed; OpenCode's is deliberately loopback-bound inside the pod).
+ports:
+  # The security proxy's listen port — the ELM's ONLY inference door.
+  proxy: 8080
+  # OpenCode's fixed serve port, bound to 127.0.0.1 only. Same network
+  # namespace as the proxy, so the proxy reaches it over loopback; nothing
+  # outside the pod ever can.
+  opencode: 4096
+  # The worker's relay webserver — the port the ELM connects to
+  # (SLOP_RELAY_PORT). Cluster-internal only (see conductor.exposePorts).
+  relay: 8090
+
+# -- Resource shapes mirroring namazu-agent's sidecar conventions: the two
+# JVM/agent-bearing containers get ~500m/512Mi requests (the element spec's
+# number, "unless measurement says otherwise" — revisit with real stream
+# telemetry); the proxy is a thin Node gate, so it mirrors namazu-agent's
+# own proxy shape scaled up for Node-vs-Go.
+resources:
+  worker:
+    requests:
+      cpu: 500m
+      memory: 512Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+  opencode:
+    requests:
+      cpu: 500m
+      memory: 512Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+  proxy:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 250m
+      memory: 256Mi
+
+# -- The namespace secret carrying the Hyper inference key (metered model
+# access). Provisioned out-of-band, never by this chart — same pattern as
+# namazu-agent's agent.hyper.apiKeySecretName. Referenced by NAME and
+# mounted as a file (HYPER_INFERENCE_KEY_FILE), never embedded, never
+# env-dumped. Fail loud when unset: a pod without the key would 401 every
+# inference call, which is strictly worse than not dispatching.
+hyperApiKeySecretName: ""
+
+# -- The slop working directory (emptyDir, shared worker<->opencode): the
+# AGENTS.md contract + .slop-builds/<id>/ scratch. Dies with the pod by
+# construction — the data authority is the ELM's APIs, the pod holds nothing
+# durable (binding decision).
+workdir:
+  size: 2Gi
+
+# -- NetworkPolicy (rendered alongside the pod template). Default-deny both
+# directions; the explicit allows below are the whole story. There is no
+# "explicit deny" primitive in NetworkPolicy — the default-deny plus
+# ipBlock `except` entries carry the metadata/cluster-internal denies.
+networkPolicy:
+  enabled: true
+  # Ingress: who may reach the proxy port (inference) and the relay port
+  # (events) — the ELM. The default allows any pod in this pod's own
+  # namespace (the ELM runs in the tenant namespace alongside the dispatched
+  # jobs); a deployment that knows better pins the ELM's own
+  # podSelector/namespaceSelector/ipBlock peers here instead (full
+  # NetworkPolicyPeer objects).
+  ingressFrom:
+    - podSelector: {}
+  # Egress: DNS (kube-system's kube-dns), then one wide internet rule for
+  # the worker's outbound needs (ELM MCP/REST, EventSub wss, Twitch IRC) —
+  # with the metadata endpoint and the cluster-internal range carved OUT of
+  # it. The ELM's own in-cluster address is re-allowed explicitly when
+  # elmCidr/elmServiceCidr say where it lives.
+  dnsNamespace: kube-system
+  dnsSelector:
+    k8s-app: kube-dns
+  # CIDRs denied INSIDE the otherwise-allowed internet egress: link-local
+  # (the cloud metadata endpoint, always) plus the cluster's pod/service
+  # range, which the pod has no business talking to EXCEPT the ELM below.
+  # Set clusterInternalCidr to "" to skip that carve-out (not recommended).
+  deniedExceptElmCidrs:
+    - 169.254.169.254/32
+  clusterInternalCidr: "10.0.0.0/8"
+  # Where the ELM is reachable in-cluster, when it is (its Service's CIDR
+  # or IP); re-allowed on the MCP/REST ports after the cluster-internal
+  # deny above. Empty -> the ELM is reached over the internet path (443).
+  elmCidr: ""

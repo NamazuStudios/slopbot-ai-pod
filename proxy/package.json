@@ -1,0 +1,19 @@
+{
+  "name": "slopbot-security-proxy",
+  "version": "0.1.0",
+  "private": true,
+  "description": "SlopBot AI pod security proxy — OIDC-gated forwarder exposing the pod-local OpenCode v2 API to the ELM application. Fails closed on every error path.",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test test/*.test.js",
+    "lint": "node --check server.js && node --check lib/config.js && node --check lib/oidc.js && node --check lib/auth.js && node --check lib/handler.js && node --check test/helpers.js && node --check test/oidc.test.js && node --check test/auth.test.js && node --check test/proxy.e2e.test.js"
+  },
+  "dependencies": {
+    "jose": "^6.2.18",
+    "undici": "^8.13.1"
+  }
+}

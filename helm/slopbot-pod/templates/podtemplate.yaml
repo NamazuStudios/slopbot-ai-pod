@@ -1,0 +1,207 @@
+{{/*
+SlopBot AI per-stream agent pod — the PodTemplate the ELM dispatches through
+Conductor's common APIs (kubernetes driver), mirroring the namazu-agent
+chart's shape: a PodTemplate (NOT a bare Pod) labeled with the conductor
+job-set, annotated with the conductor vocabulary, dispatched as a batch/v1
+Job (workload-kind: job) that Conductor retries until the worker's
+successful exit-0 after the post-stream linger.
+
+Three containers:
+  worker   (PRIMARY, first — conductor's dispatch env injection lands here)
+  opencode (headless OpenCode v2, 127.0.0.1-only, read-only rootfs)
+  proxy    (the OIDC security proxy — the sidecar's only door)
+
+The pod never has a public IP or endpoint; the ELM is the go-between. No
+service-account token, no cloud/cluster credentials. The ELM's dispatch
+injects the env allow-list into the worker; the chart renders only the
+pod-deterministic env (loopback addresses, mount paths) plus the bound
+Elements instance URL and OIDC audience, which are deployment facts the
+chart knows.
+*/}}
+
+{{- /* The trust chain is required: without the bound instance URL or this
+pod's audience the proxy has nothing to anchor on — fail the render rather
+than dispatch a pod that fails closed on every request. */}}
+{{- if or (not .Values.elementsUrl) (not .Values.audience) }}
+{{- fail "elementsUrl and audience must both be set — the security proxy anchors its OIDC trust chain on them (got elementsUrl=%q, audience=%q)" (toString .Values.elementsUrl) (toString .Values.audience) }}
+{{- end }}
+{{- if not .Values.hyperApiKeySecretName }}
+{{- fail "hyperApiKeySecretName must be set — the namespace secret carrying the Hyper inference key is the metered model-access path (binding decision; a pod without it 401s every inference call)" }}
+{{- end }}
+
+apiVersion: v1
+kind: PodTemplate
+metadata:
+  name: {{ include "slopbot-pod.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "slopbot-pod.labels" . | nindent 4 }}
+    namazu.conductor/job-set: {{ include "slopbot-pod.reqNotNil" (list "conductor.jobSet" .Values.conductor.jobSet) | quote }}
+  annotations:
+    # Dispatched as a batch/v1 Job (fresh, whole-pod, retried until the
+    # worker's successful exit — the pod tolerates preemption).
+    namazu.conductor/workload-kind: job
+    namazu.conductor/display-name: {{ .Values.conductor.displayName | quote }}
+    namazu.conductor/description: {{ .Values.conductor.description | quote }}
+    namazu.conductor/backoff-limit: {{ include "slopbot-pod.reqNotNil" (list "conductor.backoffLimit" .Values.conductor.backoffLimit) | quote }}
+    # Cluster-internal only: the relay port the ELM connects to. No public
+    # endpoint ever (binding decision) — hence no link.* pills either.
+    namazu.conductor/expose-ports: {{ .Values.conductor.exposePorts | quote }}
+    namazu.conductor/service-type: {{ .Values.conductor.serviceType | quote }}
+    namazu.conductor/terminal-job: {{ include "slopbot-pod.reqNotNil" (list "conductor.terminalJob" .Values.conductor.terminalJob) | quote }}
+    # The sidecars are plumbing an operator reaches through kubectl logs, not
+    # a terminal to attach to — keep them out of the per-container attach list.
+    namazu.conductor/hidden.opencode: "true"
+    namazu.conductor/hidden.proxy: "true"
+template:
+  metadata:
+    labels:
+      {{- include "slopbot-pod.labels" . | nindent 6 }}
+  spec:
+    # Binding: no Kubernetes service-account token EVER enters this pod —
+    # no cloud/cluster credentials, no metadata-service temptation.
+    automountServiceAccountToken: false
+    restartPolicy: Never
+
+    # Pod Security "restricted" posture (tenant namespaces enforce it at
+    # admission): non-root + RuntimeDefault seccomp pod-wide; per-container
+    # contexts below pin the exact UIDs and drop all capabilities. One
+    # shared GID (10001) across all three containers makes the shared slop
+    # workdir emptyDir group-writable; each container keeps its own distinct
+    # UID (worker 10001, opencode 10002, proxy 10003) for defense in depth.
+    securityContext:
+      runAsNonRoot: true
+      seccompProfile:
+        type: RuntimeDefault
+      fsGroup: 10001
+      fsGroupChangePolicy: OnRootMismatch
+
+    volumes:
+      # The slop working directory: the AGENTS.md contract +
+      # .slop-builds/<id>/ scratch — the ONLY writable path the OpenCode
+      # sidecar has, shared with the worker (which seeds the contract at
+      # boot). Pod-ephemeral by construction: the data authority is the
+      # ELM's APIs.
+      - name: slop-workdir
+        emptyDir:
+          sizeLimit: {{ .Values.workdir.size | quote }}
+      # The Hyper inference key — the namespace secret, referenced by name,
+      # mounted read-only as a single file into the two containers that need
+      # it (worker: for its own inference calls; opencode: the model config).
+      # Never embedded, never env-dumped.
+      - name: hyper-inference-key
+        secret:
+          secretName: {{ .Values.hyperApiKeySecretName }}
+          items:
+            - key: HYPER_API_KEY
+              path: hyper-inference-key
+
+    containers:
+      # -- worker (PRIMARY): the actual bot. Conductor applies JobRequest
+      # command/args/env overrides to the FIRST container — the ELM's
+      # dispatch injects the allow-list here (SLOP_STREAMER, SLOP_CHANNEL,
+      # SLOP_MCP_URL, SLOP_OIDC_TOKEN, SLOP_TWITCH_*, ...). The chart
+      # renders only what is pod-deterministic.
+      - name: worker
+        image: "{{ .Values.image.registry }}/{{ .Values.image.worker.repository }}:{{ .Values.image.worker.tag | default .Chart.AppVersion }}"
+        imagePullPolicy: {{ .Values.image.pullPolicy }}
+        securityContext:
+          runAsUser: 10001
+          runAsGroup: 10001
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop: ["ALL"]
+        env:
+          # The bound Elements instance — the worker verifies the ELM's OIDC
+          # responses against it (relay end-station verification).
+          - name: SLOP_ELEMENTS_URL
+            value: {{ .Values.elementsUrl | quote }}
+          # In-pod, deterministic: the security proxy's loopback address.
+          - name: SLOP_PROXY_URL
+            value: http://127.0.0.1:{{ .Values.ports.proxy }}
+          - name: SLOP_RELAY_PORT
+            value: {{ .Values.ports.relay | quote }}
+          - name: HYPER_INFERENCE_KEY_FILE
+            value: /run/secrets/hyper-inference-key
+          # NOT rendered by the chart — injected by the ELM's dispatch
+          # (primary container only): SLOP_STREAMER, SLOP_CHANNEL,
+          # SLOP_MCP_URL, SLOP_OIDC_TOKEN (short-lived, rotated by the ELM
+          # while live), SLOP_TWITCH_USERNAME, SLOP_TWITCH_OAUTH_TOKEN, and
+          # any other SLOP_TWITCH_* credential. The entrypoint fails loudly
+          # if any of them is missing.
+        volumeMounts:
+          - name: hyper-inference-key
+            mountPath: /run/secrets/hyper-inference-key
+            subPath: hyper-inference-key
+            readOnly: true
+          - name: slop-workdir
+            mountPath: /workspace/slops
+        resources:
+          {{- toYaml .Values.resources.worker | nindent 10 }}
+
+      # -- opencode: headless OpenCode v2, loopback-only at the fixed port.
+      # Read-only root filesystem — the slop workdir emptyDir is its ONLY
+      # writable path (its own state lives under a hidden subdir there).
+      - name: opencode
+        image: "{{ .Values.image.registry }}/{{ .Values.image.opencode.repository }}:{{ .Values.image.opencode.tag | default .Chart.AppVersion }}"
+        imagePullPolicy: {{ .Values.image.pullPolicy }}
+        securityContext:
+          runAsUser: 10002
+          runAsGroup: 10001
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop: ["ALL"]
+        env:
+          - name: OPENCODE_PORT
+            value: {{ .Values.ports.opencode | quote }}
+          - name: HYPER_INFERENCE_KEY_FILE
+            value: /run/secrets/hyper-inference-key
+          {{- with .Values.mcpUrl }}
+          # The ELM's MCP endpoint, for the sidecar's own MCP config (the
+          # agent downloads its references over MCP at its discretion).
+          # Dispatch cannot reach this container — the chart carries it.
+          - name: SLOP_MCP_URL
+            value: {{ . | quote }}
+          {{- end }}
+        volumeMounts:
+          - name: hyper-inference-key
+            mountPath: /run/secrets/hyper-inference-key
+            subPath: hyper-inference-key
+            readOnly: true
+          - name: slop-workdir
+            mountPath: /workspace/slops
+        resources:
+          {{- toYaml .Values.resources.opencode | nindent 10 }}
+
+      # -- proxy: the OIDC security proxy. The ELM's ONLY inference door:
+      # it authenticates every request against the bound instance's OIDC
+      # discovery/JWKS and forwards to OpenCode over loopback. Health
+      # routes (/healthz, /readyz) are its only unauthenticated paths.
+      - name: proxy
+        image: "{{ .Values.image.registry }}/{{ .Values.image.proxy.repository }}:{{ .Values.image.proxy.tag | default .Chart.AppVersion }}"
+        imagePullPolicy: {{ .Values.image.pullPolicy }}
+        securityContext:
+          runAsUser: 10003
+          runAsGroup: 10001
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop: ["ALL"]
+        env:
+          - name: SLOP_PROXY_PORT
+            value: {{ .Values.ports.proxy | quote }}
+          - name: OPENCODE_PORT
+            value: {{ .Values.ports.opencode | quote }}
+          - name: SLOP_ELEMENTS_URL
+            value: {{ .Values.elementsUrl | quote }}
+          - name: SLOP_PROXY_AUDIENCE
+            value: {{ .Values.audience | quote }}
+        readinessProbe:
+          httpGet:
+            path: /readyz
+            port: {{ .Values.ports.proxy }}
+          periodSeconds: 5
+          failureThreshold: 60
+        resources:
+          {{- toYaml .Values.resources.proxy | nindent 10 }}

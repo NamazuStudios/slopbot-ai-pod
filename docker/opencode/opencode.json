@@ -1,0 +1,30 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "share": "disabled",
+  "autoupdate": false,
+  "small_model": "hyper/prism",
+  "provider": {
+    "hyper": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "Charm Hyper",
+      "options": {
+        "baseURL": "https://hyper.charm.land/v1",
+        "apiKey": "{env:HYPER_API_KEY}"
+      },
+      "models": {
+        "prism": {}
+      }
+    }
+  },
+  "model": "hyper/prism",
+  "permission": {
+    "edit": "allow",
+    "webfetch": "allow",
+    "bash": {
+      "*": "ask"
+    },
+    "external_directory": {
+      "/workspace/slops/**": "allow"
+    }
+  }
+}
