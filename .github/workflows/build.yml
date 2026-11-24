@@ -188,3 +188,37 @@ jobs:
             exit 1
           fi
           echo "fail-loud guards hold"
+
+  # -- Job 4: publish the chart to ghcr as an OCI artifact (main + dispatch).
+  # The ELM (and any operator) consumes it with:
+  #   helm pull oci://ghcr.io/namazustudios/slopbot-ai-pod/slopbot-pod --version <x>
+  # The chart version is the source of truth (Chart.yaml's `version`); each
+  # publish is idempotent-safe only by version bump — a re-run with the same
+  # version is refused by ghcr, which is the immutability we want.
+  publish-chart:
+    name: publish chart → ghcr (OCI)
+    runs-on: ubuntu-latest
+    needs: [helm-check]
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.16.3
+
+      - name: Log in to ghcr
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Package + push the chart
+        run: |
+          set -eu
+          VERSION=$(awk '/^version:/ {print $2}' helm/slopbot-pod/Chart.yaml)
+          helm package helm/slopbot-pod --version "$VERSION" --app-version "$(awk '/^appVersion:/ {print $2}' helm/slopbot-pod/Chart.yaml)"
+          helm push "slopbot-pod-$VERSION.tgz" "oci://ghcr.io/${{ github.repository_owner }}/slopbot-ai-pod"
+          echo "Chart published: oci://ghcr.io/${{ github.repository_owner }}/slopbot-ai-pod/slopbot-pod:$VERSION"
