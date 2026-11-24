@@ -216,9 +216,12 @@ jobs:
         run: echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io -u "${{ github.actor }}" --password-stdin
 
       - name: Package + push the chart
+        env:
+          # ghcr requires LOWERCASE repository paths; the org name is mixed-case.
+          OCI_REPO: ghcr.io/namazustudios/slopbot-ai-pod
         run: |
           set -eu
           VERSION=$(awk '/^version:/ {print $2}' helm/slopbot-pod/Chart.yaml)
           helm package helm/slopbot-pod --version "$VERSION" --app-version "$(awk '/^appVersion:/ {print $2}' helm/slopbot-pod/Chart.yaml)"
-          helm push "slopbot-pod-$VERSION.tgz" "oci://ghcr.io/${{ github.repository_owner }}/slopbot-ai-pod"
-          echo "Chart published: oci://ghcr.io/${{ github.repository_owner }}/slopbot-ai-pod/slopbot-pod:$VERSION"
+          helm push "slopbot-pod-$VERSION.tgz" "oci://$OCI_REPO"
+          echo "Chart published: oci://$OCI_REPO/slopbot-pod:$VERSION"
