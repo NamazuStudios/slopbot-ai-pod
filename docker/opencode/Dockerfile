@@ -38,6 +38,7 @@ RUN mkdir -p /opt/opencode \
 # env-provided path by the entrypoint (never baked, never logged); the
 # config only references it through the {env:VAR} substitution.
 COPY docker/opencode/opencode.json /etc/slopbot/opencode.json
+COPY docker/opencode/slops-AGENTS.md /etc/slopbot/slops-AGENTS.md
 COPY docker/opencode/entrypoint.sh /usr/local/bin/slop-opencode-entrypoint
 RUN chmod 0755 /usr/local/bin/slop-opencode-entrypoint \
     && chmod -R a+rX /etc/slopbot

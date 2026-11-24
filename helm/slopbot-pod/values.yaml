@@ -22,7 +22,8 @@ conductor:
   # the budget only has to absorb scheduling/preemption noise.
   backoffLimit: 5
   # The pod never has a public IP or endpoint (binding decision), so the
-  # only port worth exposing is the worker's relay webserver — and only as
+  # only port worth exposing is the worker's relay websocket (the agent
+  # address) — and only as
   # a CLUSTER-INTERNAL ClusterIP the ELM connects to. Never a LoadBalancer,
   # never a reserved subdomain.
   exposePorts: "8090/tcp"
@@ -31,12 +32,12 @@ conductor:
   # Human label/description for the dispatched job in Conductor's UI.
   displayName: "SlopBot AI worker"
   description: >-
-    SlopBot AI per-stream agent: element worker (Twitch chat + EventSub
-    triggers, MCP persistence, relay for the ELM), a headless OpenCode v2
-    sidecar for inference behind the OIDC security proxy. Injected env is
-    the ELM's dispatch allow-list; the Hyper inference key comes from the
-    namespace secret referenced below. No service-account token, no cluster
-    credentials, no public endpoint.
+    SlopBot AI per-stream agent: thin Node forwarder (keeps the Twitch
+    links alive, captures chat/events/redemptions, batches them to the ELM's
+    pushes every captured event over its OIDC-gated websocket to the ELM,
+    lingers after stream end), a headless OpenCode v2 sidecar for inference
+    behind the OIDC security proxy. All engine logic is ELM-side; the pod
+    never has a public endpoint and no service-account token.
 
 # -- The bound Elements instance (the ELM's own deployment) and this pod's
 # OIDC identity. REQUIRED — fail loud when unset (#92): the security proxy
@@ -58,7 +59,7 @@ image:
   registry: ghcr.io/namazustudios
   pullPolicy: IfNotPresent
   worker:
-    repository: slopbot-worker
+    repository: slopbot-worker  # the thin Node forwarder (no JVM)
     tag: ""
   opencode:
     repository: slopbot-opencode
@@ -75,23 +76,23 @@ ports:
   # namespace as the proxy, so the proxy reaches it over loopback; nothing
   # outside the pod ever can.
   opencode: 4096
-  # The worker's relay webserver — the port the ELM connects to
-  # (SLOP_RELAY_PORT). Cluster-internal only (see conductor.exposePorts).
+  # The worker's agent address — the websocket port the ELM connects to
+  # (SLOP_RELAY_PORT, /slop/relay/ws). Cluster-internal only (see
+  # conductor.exposePorts).
   relay: 8090
 
-# -- Resource shapes mirroring namazu-agent's sidecar conventions: the two
-# JVM/agent-bearing containers get ~500m/512Mi requests (the element spec's
-# number, "unless measurement says otherwise" — revisit with real stream
-# telemetry); the proxy is a thin Node gate, so it mirrors namazu-agent's
-# own proxy shape scaled up for Node-vs-Go.
+# -- Resource shapes mirroring namazu-agent's sidecar conventions. The
+# forwarder is a thin Node process (the JVM worker is gone — the designer's
+# "thin forwarder" scope decision), so it takes the same light shape as the
+# proxy; the OpenCode sidecar keeps the agent-bearing shape.
 resources:
   worker:
     requests:
-      cpu: 500m
-      memory: 512Mi
+      cpu: 100m
+      memory: 128Mi
     limits:
-      cpu: "1"
-      memory: 1Gi
+      cpu: 500m
+      memory: 256Mi
   opencode:
     requests:
       cpu: 500m
@@ -115,10 +116,10 @@ resources:
 # inference call, which is strictly worse than not dispatching.
 hyperApiKeySecretName: ""
 
-# -- The slop working directory (emptyDir, shared worker<->opencode): the
-# AGENTS.md contract + .slop-builds/<id>/ scratch. Dies with the pod by
-# construction — the data authority is the ELM's APIs, the pod holds nothing
-# durable (binding decision).
+# -- The slop working directory (emptyDir, mounted into the OpenCode
+# sidecar): the AGENTS.md contract + .slop-builds/<id>/ scratch. Dies with
+# the pod by construction — the data authority is the ELM's APIs, the pod
+# holds nothing durable (binding decision).
 workdir:
   size: 2Gi
 
@@ -128,7 +129,7 @@ workdir:
 # ipBlock `except` entries carry the metadata/cluster-internal denies.
 networkPolicy:
   enabled: true
-  # Ingress: who may reach the proxy port (inference) and the relay port
+  # Ingress: who may reach the proxy port (inference) and the agent address
   # (events) — the ELM. The default allows any pod in this pod's own
   # namespace (the ELM runs in the tenant namespace alongside the dispatched
   # jobs); a deployment that knows better pins the ELM's own

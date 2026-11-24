@@ -40,6 +40,15 @@ mkdir -p \
   "${XDG_STATE_HOME:-/workspace/slops/.opencode-state/state}" \
   /workspace/slops/.slop-builds
 
+# Seed the agent contract (copy-if-absent — a fresher ELM-pushed copy wins;
+# nothing else is ever seeded: the agent downloads its own references via
+# MCP). The thin forwarder no longer does this — the contract is the
+# sidecar's own.
+if [ ! -f /workspace/slops/AGENTS.md ]; then
+  cp /etc/slopbot/slops-AGENTS.md /workspace/slops/AGENTS.md
+  log "seeded /workspace/slops/AGENTS.md (agent contract)"
+fi
+
 log "serving OpenCode v2 on 127.0.0.1:${OPENCODE_PORT:-4096} (loopback only, behind the security proxy)"
 cd /workspace/slops
 exec "$OPENCODE_BIN" serve --port "${OPENCODE_PORT:-4096}" --hostname 127.0.0.1

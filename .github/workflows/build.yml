@@ -1,11 +1,11 @@
 name: Build, test, and push images
 
 # Prerequisites provisioned out-of-band (see docs/SPEC.md "Implementation notes"):
-# - The ELEMENT_RELEASE_TAG repo Variable, pinning the slopbot-ai-element
-#   release whose artifacts (worker.jar + element.elm) the worker image
-#   builds from — the build fails loudly without it, by design.
 # - GHCR push access for this repo (the default GITHUB_TOKEN with
-#   packages:write covers org-owned ghcr.io/namazustudios/* repos).
+#   packages:write covers org-owned ghcr.io/namazustudios/* repos). No
+#   ELEMENT_RELEASE_TAG Variable anymore: the worker image is the thin Node
+#   forwarder and carries no element artifacts (the "thin forwarder" scope
+#   decision, 2026-11-24).
 
 on:
   push:
@@ -34,9 +34,10 @@ env:
   IMAGE_PREFIX: ghcr.io/namazustudios
 
 jobs:
-  # -- Job 1: the security proxy's unit tests (the validation matrix). ----
-  proxy-test:
-    name: proxy lint + test
+  # -- Job 1: unit tests — the security proxy's validation matrix AND the
+  # thin forwarder's websocket capture/relay/linger suite. ------------------
+  node-tests:
+    name: node lint + test (proxy, forwarder)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -47,14 +48,21 @@ jobs:
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: proxy/package-lock.json
+          cache-dependency-path: |
+            proxy/package-lock.json
+            worker/package-lock.json
 
       - name: Lint (node --check on every source file)
-        working-directory: proxy
-        run: npm run lint
+        run: |
+          npm run lint --prefix proxy
+          npm run lint --prefix worker
 
-      - name: Test (validation matrix, JWKS TTL/rotation, fail-closed, forwarding)
+      - name: Test the security proxy (validation matrix, JWKS TTL/rotation, fail-closed, forwarding)
         working-directory: proxy
+        run: npm ci --ignore-scripts && npm test
+
+      - name: 'Test the thin forwarder (stub Twitch IRC + stub ELM: websocket push, play round trip, force-reconnect, linger exit)'
+        working-directory: worker
         run: npm ci --ignore-scripts && npm test
 
   # -- Job 2: build + push the three images to ghcr (main + dispatch). ----
@@ -62,7 +70,7 @@ jobs:
   # pins by sha tag or digest — never a floating tag.
   docker:
     name: build + push (${{ matrix.image }})
-    needs: [proxy-test]
+    needs: [node-tests]
     # Publishing stays main-only; the PR trigger exists for the test/lint
     # jobs (mirroring the namazu-agent chart's split).
     if: github.event_name != 'pull_request'
@@ -82,18 +90,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
-      - name: Fail loud without the ELEMENT_RELEASE_TAG Variable
-        # The worker image build pins the element release by repo Variable.
-        # Missing it is a configuration error — fail with a visible message,
-        # not a confusing curl 404 deep in the Dockerfile.
-        if: matrix.image == 'slopbot-worker'
-        run: |
-          if [ -z "${{ vars.ELEMENT_RELEASE_TAG }}" ]; then
-            echo "::error::ELEMENT_RELEASE_TAG repo Variable is not set — the worker image build cannot pin the slopbot-ai-element release artifacts (worker.jar + element.elm). Set it in the repo's Settings > Secrets and variables > Actions > Variables."
-            exit 1
-          fi
-          echo "Building worker from element release ${{ vars.ELEMENT_RELEASE_TAG }}"
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
@@ -117,7 +113,6 @@ jobs:
           platforms: linux/amd64,linux/arm64
           push: true
           provenance: false
-          build-args: ${{ matrix.image == 'slopbot-worker' && format('ELEMENT_RELEASE_TAG={0}', vars.ELEMENT_RELEASE_TAG) || '' }}
           tags: |
             ${{ env.IMAGE_PREFIX }}/${{ matrix.image }}:sha-${{ github.sha }}
             ${{ env.IMAGE_PREFIX }}/${{ matrix.image }}:latest

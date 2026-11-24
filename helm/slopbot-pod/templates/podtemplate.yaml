@@ -7,7 +7,9 @@ Job (workload-kind: job) that Conductor retries until the worker's
 successful exit-0 after the post-stream linger.
 
 Three containers:
-  worker   (PRIMARY, first — conductor's dispatch env injection lands here)
+  worker   (PRIMARY, first — conductor's dispatch env injection lands here;
+            the THIN NODE FORWARDER: Twitch liveness + capture + event
+            push over its OIDC-gated websocket + post-stream linger)
   opencode (headless OpenCode v2, 127.0.0.1-only, read-only rootfs)
   proxy    (the OIDC security proxy — the sidecar's only door)
 
@@ -79,16 +81,15 @@ template:
     volumes:
       # The slop working directory: the AGENTS.md contract +
       # .slop-builds/<id>/ scratch — the ONLY writable path the OpenCode
-      # sidecar has, shared with the worker (which seeds the contract at
-      # boot). Pod-ephemeral by construction: the data authority is the
-      # ELM's APIs.
+      # sidecar has (it seeds its own contract at boot; the thin forwarder
+      # has no part in it). Pod-ephemeral by construction: the data
+      # authority is the ELM's APIs.
       - name: slop-workdir
         emptyDir:
           sizeLimit: {{ .Values.workdir.size | quote }}
       # The Hyper inference key — the namespace secret, referenced by name,
-      # mounted read-only as a single file into the two containers that need
-      # it (worker: for its own inference calls; opencode: the model config).
-      # Never embedded, never env-dumped.
+      # mounted read-only as a single file into the OpenCode sidecar (the
+      # only container with model access). Never embedded, never env-dumped.
       - name: hyper-inference-key
         secret:
           secretName: {{ .Values.hyperApiKeySecretName }}
@@ -97,11 +98,19 @@ template:
               path: hyper-inference-key
 
     containers:
-      # -- worker (PRIMARY): the actual bot. Conductor applies JobRequest
-      # command/args/env overrides to the FIRST container — the ELM's
-      # dispatch injects the allow-list here (SLOP_STREAMER, SLOP_CHANNEL,
-      # SLOP_MCP_URL, SLOP_OIDC_TOKEN, SLOP_TWITCH_*, ...). The chart
-      # renders only what is pod-deterministic.
+      # -- worker (PRIMARY): the THIN FORWARDER (Node 22 — no JVM, no element
+      # artifacts). Keeps the Twitch links alive, captures chat/events/
+      # redemptions, and PUSHES every event over its WEBSOCKET (the "agent
+      # address", /slop/relay/ws on the relay port — worker↔ELM is
+      # websockets end to end) to each connected client; playback commands
+      # come back over the same socket and are relayed onward. Lingers ~10
+      # minutes after stream end, then exits 0. NO engine — trigger
+      # evaluation/cooldowns/queues are ELM-side; no model access — that's
+      # the sidecar's. Conductor applies JobRequest command/args/env
+      # overrides to the FIRST container — the ELM's dispatch injects the
+      # allow-list here (SLOP_STREAMER, SLOP_CHANNEL, SLOP_MCP_URL,
+      # SLOP_OIDC_TOKEN, SLOP_TWITCH_*). The chart renders only what is
+      # pod-deterministic.
       - name: worker
         image: "{{ .Values.image.registry }}/{{ .Values.image.worker.repository }}:{{ .Values.image.worker.tag | default .Chart.AppVersion }}"
         imagePullPolicy: {{ .Values.image.pullPolicy }}
@@ -112,36 +121,32 @@ template:
           capabilities:
             drop: ["ALL"]
         env:
-          # The bound Elements instance — the worker verifies the ELM's OIDC
-          # responses against it (relay end-station verification).
+          # The bound Elements instance — the ELM: the OIDC issuer the relay's
+          # verification chain anchors on (the connecting client's token).
           - name: SLOP_ELEMENTS_URL
             value: {{ .Values.elementsUrl | quote }}
-          # In-pod, deterministic: the security proxy's loopback address.
-          - name: SLOP_PROXY_URL
-            value: http://127.0.0.1:{{ .Values.ports.proxy }}
+          # This pod's OIDC audience — the agent address verifies the ELM's
+          # presented token against it (the same chain the security proxy
+          # runs) before accepting the upgrade.
+          - name: SLOP_PROXY_AUDIENCE
+            value: {{ .Values.audience | quote }}
           - name: SLOP_RELAY_PORT
             value: {{ .Values.ports.relay | quote }}
-          - name: HYPER_INFERENCE_KEY_FILE
-            value: /run/secrets/hyper-inference-key
           # NOT rendered by the chart — injected by the ELM's dispatch
           # (primary container only): SLOP_STREAMER, SLOP_CHANNEL,
-          # SLOP_MCP_URL, SLOP_OIDC_TOKEN (short-lived, rotated by the ELM
-          # while live), SLOP_TWITCH_USERNAME, SLOP_TWITCH_OAUTH_TOKEN, and
-          # any other SLOP_TWITCH_* credential. The entrypoint fails loudly
-          # if any of them is missing.
-        volumeMounts:
-          - name: hyper-inference-key
-            mountPath: /run/secrets/hyper-inference-key
-            subPath: hyper-inference-key
-            readOnly: true
-          - name: slop-workdir
-            mountPath: /workspace/slops
+          # SLOP_MCP_URL, SLOP_OIDC_TOKEN, SLOP_TWITCH_USERNAME,
+          # SLOP_TWITCH_OAUTH_TOKEN, and any other SLOP_TWITCH_* credential
+          # (SLOP_TWITCH_CLIENT_ID / SLOP_TWITCH_BROADCASTER_ID light up
+          # EventSub; without them it stays dormant). The forwarder fails
+          # loudly if the contract is incomplete. No Hyper key for the
+          # forwarder — model access is the sidecar's.
         resources:
           {{- toYaml .Values.resources.worker | nindent 10 }}
 
       # -- opencode: headless OpenCode v2, loopback-only at the fixed port.
       # Read-only root filesystem — the slop workdir emptyDir is its ONLY
-      # writable path (its own state lives under a hidden subdir there).
+      # writable path (its own state lives under a hidden subdir there, and
+      # its entrypoint seeds the agent contract into the workdir root).
       - name: opencode
         image: "{{ .Values.image.registry }}/{{ .Values.image.opencode.repository }}:{{ .Values.image.opencode.tag | default .Chart.AppVersion }}"
         imagePullPolicy: {{ .Values.image.pullPolicy }}

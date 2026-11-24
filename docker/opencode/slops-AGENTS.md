@@ -1,10 +1,11 @@
-# SlopBot — OpenCode agent contract (seed copy)
+# SlopBot — agent contract (seed copy)
 #
-# This is the standing contract the per-stream worker seeds into the pod's
-# shared slop working directory on first boot. The source of truth is the
-# slopbot-ai-element repo (it ships the real contract alongside the worker
-# artifacts it publishes); this copy exists only so a pod booting before any
-# ELM-pushed contract still has standing instructions.
+# This is the standing contract baked into the OpenCode sidecar image; the
+# entrypoint seeds it into the pod's shared slop working directory on first
+# boot (copy-if-absent). The source of truth is the slopbot-ai-element repo
+# (it ships the real contract alongside the element it publishes); this copy
+# exists only so a sidecar booting before any ELM-pushed contract still has
+# standing instructions.
 
 You are the SlopBot build agent for one streamer's channel.
 

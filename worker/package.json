@@ -1,0 +1,21 @@
+{
+  "name": "slopbot-forwarder",
+  "version": "0.1.0",
+  "private": true,
+  "description": "SlopBot AI thin forwarder — keeps the Twitch links alive, captures chat/events/redemptions, forwards them batched (OIDC) to the ELM's ingestion endpoint, serves the OIDC-verified relay webserver the ELM connects to, lingers after stream end, exits 0. No engine — that's ELM-side.",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "start": "node bin/forwarder.js",
+    "test": "node --test test/*.test.js",
+    "lint": "node --check bin/forwarder.js && node --check lib/config.js && node --check lib/irc.js && node --check lib/eventsub.js && node --check lib/relay.js && node --check lib/forwarder.js && node --check test/helpers.js && node --check test/irc.test.js && node --check test/forwarder.e2e.test.js"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "jose": "^6.2.18"
+  }
+}
