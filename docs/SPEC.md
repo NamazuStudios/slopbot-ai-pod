@@ -138,9 +138,10 @@ decisions landed the same day and are reflected throughout:
 
 | container | requests | limits | rationale |
 |---|---|---|---|
-| worker (forwarder) | 100m / 128Mi | 500m / 256Mi | thin Node process — the JVM sizing left with the scope change |
-| opencode | 500m / 512Mi | 1 CPU / 1Gi | agent-bearing sidecar |
-| proxy | 100m / 128Mi | 250m / 256Mi | namazu-agent's own proxy shape (50m/64Mi Go) scaled for Node |
+| worker (forwarder) | 50m / 64Mi | 250m / 192Mi | thin Node process — the JVM sizing left with the scope change |
+| opencode | 400m / 512Mi | 600m / 768Mi | agent-bearing sidecar (inference is REMOTE — Hyper; the footprint is the Node runtime + the build's context) |
+| proxy | 50m / 64Mi | 100m / 128Mi | the OIDC door |
+| **pod total** | **500m / 640Mi** | **950m / ~1.09Gi** | the designer's envelope (2026-11-26): ~1 vCPU + 1 GiB per pod; requests pack several agent pods per physical VM |
 
 ### CI prerequisites (provisioned out-of-band, in the repo's Settings)
 
