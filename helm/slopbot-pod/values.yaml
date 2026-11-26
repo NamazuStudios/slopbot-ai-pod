@@ -58,15 +58,19 @@ mcpUrl: ""
 image:
   registry: ghcr.io/namazustudios
   pullPolicy: IfNotPresent
+  # Tag policy: CI pushes immutable sha-<full-commit> tags (+ latest on
+  # main). Production dispatches pin by sha tag; `latest` is the default
+  # convenience tag for the test stand-up (the chart's AppVersion is NOT a
+  # published tag — 0.1.0 404s on ghcr).
   worker:
     repository: slopbot-worker  # the thin Node forwarder (no JVM)
-    tag: ""
+    tag: "latest"
   opencode:
     repository: slopbot-opencode
-    tag: ""
+    tag: "latest"
   proxy:
     repository: slopbot-proxy
-    tag: ""
+    tag: "latest"
 
 # -- The ghcr pod images are PRIVATE (designer decision: the repos are NOT
 # open source). The dispatched pod needs an imagePullSecret backed by a
