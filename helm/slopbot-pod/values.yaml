@@ -108,27 +108,32 @@ ports:
 # "thin forwarder" scope decision), so it takes the same light shape as the
 # proxy; the OpenCode sidecar keeps the agent-bearing shape.
 resources:
+  # Sized to the designer's envelope: ~1 vCPU + 1 GiB TOTAL per pod
+  # (limits), with requests packed well under it so several agent pods
+  # share one physical VM. The heavy container is opencode (the agent
+  # runtime) — inference itself is REMOTE (Hyper), so the footprint is
+  # the Node runtime + the build's context, not a model.
   worker:
     requests:
-      cpu: 100m
-      memory: 128Mi
-    limits:
-      cpu: 500m
-      memory: 256Mi
-  opencode:
-    requests:
-      cpu: 500m
-      memory: 512Mi
-    limits:
-      cpu: "1"
-      memory: 1Gi
-  proxy:
-    requests:
-      cpu: 100m
-      memory: 128Mi
+      cpu: 50m
+      memory: 64Mi
     limits:
       cpu: 250m
-      memory: 256Mi
+      memory: 192Mi
+  opencode:
+    requests:
+      cpu: 400m
+      memory: 512Mi
+    limits:
+      cpu: 600m
+      memory: 768Mi
+  proxy:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 100m
+      memory: 128Mi
 
 # -- The namespace secret carrying the Hyper inference key (metered model
 # access). Provisioned out-of-band, never by this chart — same pattern as
