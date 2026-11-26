@@ -60,6 +60,14 @@ template:
     labels:
       {{- include "slopbot-pod.labels" . | nindent 6 }}
   spec:
+    {{- /* The ghcr pod images are PRIVATE by design — keep them that way.
+    When imagePullSecretName is set, the dispatched pod pulls through the
+    secret the designer loads (a docker-registry secret for ghcr.io backed
+    by a fine-grained PAT with read:packages). Empty renders without. */}}
+    {{- if .Values.imagePullSecret.name }}
+    imagePullSecrets:
+      - name: {{ .Values.imagePullSecret.name }}
+    {{- end }}
     # Binding: no Kubernetes service-account token EVER enters this pod —
     # no cloud/cluster credentials, no metadata-service temptation.
     automountServiceAccountToken: false

@@ -68,6 +68,24 @@ image:
     repository: slopbot-proxy
     tag: ""
 
+# -- The ghcr pod images are PRIVATE (designer decision: the repos are NOT
+# open source). The dispatched pod needs an imagePullSecret backed by a
+# fine-grained PAT with read:packages. Two ways to load it:
+#   1. kubectl (the secret exists first, the chart only references it):
+#        kubectl create secret docker-registry slopbot-ghcr \
+#          --docker-server=ghcr.io --docker-username=<github-username> \
+#          --docker-password=<PAT-with-read:packages>
+#      then set imagePullSecret.name = slopbot-ghcr, create = false.
+#   2. Helm-managed: set create = true and pass the FULL docker config JSON
+#      with --set-file imagePullSecret.dockerconfigjson=<file> (the chart
+#      renders the Secret itself).
+# Leave name empty to render without an imagePullSecret (local dev clusters
+# with a cached image sidecar).
+imagePullSecret:
+  name: "slopbot-ghcr"
+  create: false
+  dockerconfigjson: ""
+
 # -- Ports (fixed; OpenCode's is deliberately loopback-bound inside the pod).
 ports:
   # The security proxy's listen port — the ELM's ONLY inference door.
