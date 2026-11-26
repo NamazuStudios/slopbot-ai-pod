@@ -14,6 +14,11 @@
 //                        issuer the agent address's upgrade gate verifies
 //                        the connecting client's token against)
 //   SLOP_RELAY_PORT      the relay webserver port the ELM connects to
+//   SLOP_ELM_URL         the ELM's REST root (the lease routes) — optional;
+//                        absent = lease-less run (out-of-band dispatches)
+//   SLOP_POD_TOKEN       the dispatch-minted pod token (the lease routes)
+//   SLOP_POD_MODE        stream | build (default build)
+//   SLOP_POD_HEARTBEAT_SECONDS / SLOP_POD_INSTANCE_ID — lease tuning
 //   SLOP_TWITCH_*        the streamer's Twitch credentials
 //                        (SLOP_TWITCH_USERNAME + SLOP_TWITCH_OAUTH_TOKEN
 //                        required; SLOP_TWITCH_CLIENT_ID +
@@ -49,6 +54,7 @@ export function loadConfig(env = process.env) {
     mcpUrl: env.SLOP_MCP_URL.trim(),
     audience: env.SLOP_PROXY_AUDIENCE.trim(),
     elementsUrl: env.SLOP_ELEMENTS_URL.trim().replace(/\/+$/, ''),
+    elmUrl: (env.SLOP_ELM_URL ?? '').trim().replace(/\/+$/, ''),
     relayPort,
     twitchUsername: env.SLOP_TWITCH_USERNAME.trim(),
   };

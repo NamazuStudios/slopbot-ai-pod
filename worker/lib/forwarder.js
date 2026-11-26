@@ -20,6 +20,7 @@
 import { IrcClient } from './irc.js';
 import { EventSubClient } from './eventsub.js';
 import { RelayServer } from './relay.js';
+import { PodLease } from './podlease.js';
 
 const LINGER_MS = 10 * 60_000; // ~10 minutes after stream end, then exit 0
 
@@ -42,6 +43,17 @@ export class Forwarder {
     this.streamEnded = false;
     this.lingerTimer = null;
     this._lingerResolve = null;
+
+    // The lease (Pod Boot Mechanics): register at boot, heartbeat while
+    // live, release on exit; a 409 self-evicts (one pod per streamer).
+    this.lease = new PodLease({
+      streamer: config.streamer,
+      elmUrl: config.elmUrl ?? config.elementsUrl,
+      podToken: options.credentials?.podToken ?? process.env.SLOP_POD_TOKEN ?? '',
+      podInstanceId: process.env.SLOP_POD_INSTANCE_ID ?? `pod-${process.pid}`,
+      address: `${options.advertiseAddress ?? process.env.SLOP_POD_IP ?? '127.0.0.1'}:${config.relayPort}`,
+      mode: process.env.SLOP_POD_MODE ?? 'build',
+    }, { log: this.log });
 
     // Credential getters — env re-read by default (the ELM rotates the pod
     // token while live, so a per-call re-read picks up the rotation),
@@ -92,6 +104,25 @@ export class Forwarder {
   }
 
   async run() {
+    // The lease first: claim (or self-evict) BEFORE Twitch capture — two
+    // pods for one streamer must never both capture.
+    let evicted = false;
+    try {
+      await this.lease.register();
+    } catch (e) {
+      if (e.evicted) {
+        log('self-evicting — another pod holds the streamer (one pod per streamer)');
+        this.exitCode = 0;
+        evicted = true;
+      } else {
+        log(`lease registration failed — continuing lease-less: ${e.message}`);
+      }
+    }
+    if (evicted) {
+      await this.relay.close();
+      return this.exitCode ?? 0;
+    }
+
     await this.relay.listen();
     this.irc.start();
     this.eventSub.start();
@@ -105,11 +136,19 @@ export class Forwarder {
     await this.relay.close();
     this.irc.stop();
     this.eventSub.stop();
+    await this.lease.release();
     log(`forwarder down (exit ${this.exitCode ?? 0})`);
     return this.exitCode ?? 0;
   }
 
   _onPlayback(command) {
+    if (command.type === 'buildDone') {
+      if ((process.env.SLOP_POD_MODE ?? 'build') !== 'build') return;
+      log(`build ${command.name ?? ''} completed — exiting 0 (the build-mode pod's work is done)`);
+      this.exitCode = 0;
+      this._lingerResolve?.();
+      return;
+    }
     if (command.type === 'stream-end') {
       if (this.streamEnded) return;
       this.streamEnded = true;

@@ -131,6 +131,12 @@ template:
         env:
           # The bound Elements instance — the ELM: the OIDC issuer the relay's
           # verification chain anchors on (the connecting client's token).
+          - name: SLOP_POD_IP
+            valueFrom:
+              fieldRef:
+                fieldPath: status.podIP
+          - name: SLOP_POD_HEARTBEAT_SECONDS
+            value: "30"
           - name: SLOP_ELEMENTS_URL
             value: {{ .Values.elementsUrl | quote }}
           # This pod's OIDC audience — the agent address verifies the ELM's
