@@ -64,6 +64,10 @@ template:
     When imagePullSecretName is set, the dispatched pod pulls through the
     secret the designer loads (a docker-registry secret for ghcr.io backed
     by a fine-grained PAT with read:packages). Empty renders without. */}}
+    # The tenant-pin VAP (namazu-cloud-terraform#58 §2) requires every pod
+    # to pin its tenant identity — the namespace's workspace_id.
+    nodeSelector:
+      cloud.namazustudios.com/workspace_id: {{ .Release.Namespace }}
     {{- if .Values.imagePullSecret.name }}
     imagePullSecrets:
       - name: {{ .Values.imagePullSecret.name }}
