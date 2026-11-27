@@ -18,7 +18,15 @@ export class PodLease {
     this.address = config.address ?? '';
     this.mode = config.mode ?? 'build';
     this.heartbeatSeconds = options.heartbeatSeconds ?? Number(process.env.SLOP_POD_HEARTBEAT_SECONDS ?? 30);
-    this.log = options.log ?? log;
+    // The injected log comes in two shapes — a bare function (the lease-log
+    // shim) or a console-shaped object ({log, warn}, what the forwarder
+    // passes for the relay/IRC clients). Normalize to a callable here;
+    // a console OBJECT passed bare is what crashed the register handler.
+    const injected = options.log ?? log;
+    this.log = typeof injected === 'function'
+      ? injected
+      : (typeof injected?.log === 'function' ? injected.log.bind(injected) : null)
+        ?? ((...parts) => console.log('[pod-lease]', ...parts));
     this.timer = null;
     this.evicted = false;
   }

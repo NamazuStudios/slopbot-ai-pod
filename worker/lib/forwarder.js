@@ -37,7 +37,7 @@ export class Forwarder {
   constructor(config, options = {}) {
     this.config = config;
     this.lingerMs = options.lingerMs ?? LINGER_MS;
-    this.log = options.log ?? ((...parts) => console.log(...parts));
+    this.log = options.log ?? console;
     this.exitCode = null; // resolved run() value: 0 on the clean path
 
     this.streamEnded = false;
