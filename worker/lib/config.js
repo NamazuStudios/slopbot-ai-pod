@@ -35,8 +35,6 @@ const REQUIRED = [
   'SLOP_PROXY_AUDIENCE',
   'SLOP_ELEMENTS_URL',
   'SLOP_RELAY_PORT',
-  'SLOP_TWITCH_USERNAME',
-  'SLOP_TWITCH_OAUTH_TOKEN',
 ];
 
 export function loadConfig(env = process.env) {
@@ -56,6 +54,6 @@ export function loadConfig(env = process.env) {
     elementsUrl: env.SLOP_ELEMENTS_URL.trim().replace(/\/+$/, ''),
     elmUrl: (env.SLOP_ELM_URL ?? '').trim().replace(/\/+$/, ''),
     relayPort,
-    twitchUsername: env.SLOP_TWITCH_USERNAME.trim(),
+    twitchUsername: (env.SLOP_TWITCH_USERNAME ?? '').trim(),
   };
 }
