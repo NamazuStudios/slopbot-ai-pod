@@ -114,6 +114,9 @@ template:
       - name: slop-workdir
         emptyDir:
           sizeLimit: {{ .Values.workdir.size | quote }}
+      - name: opencode-tmp
+        emptyDir:
+          sizeLimit: 256Mi
       # The Hyper inference key — the namespace secret, referenced by name,
       # mounted read-only as a single file into the OpenCode sidecar (the
       # only container with model access). Never embedded, never env-dumped.
@@ -209,6 +212,8 @@ template:
             readOnly: true
           - name: slop-workdir
             mountPath: /workspace/slops
+          - name: opencode-tmp
+            mountPath: /tmp
         resources:
           {{- toYaml .Values.resources.opencode | nindent 10 }}
 
