@@ -68,6 +68,21 @@ template:
     # to pin its tenant identity — the namespace's workspace_id.
     nodeSelector:
       cloud.namazustudios.com/workspace_id: {{ .Release.Namespace }}
+    # The dedicated-node taint (the same toleration the namazu-instance chart carries) —
+    # the require-tenant-pin VAP enforces BOTH the pin and the toleration.
+    tolerations:
+      - effect: NoSchedule
+        key: cloud.namazustudios.com/dedicated
+        operator: Equal
+        value: tenant
+      - effect: NoExecute
+        key: node.kubernetes.io/not-ready
+        operator: Exists
+        tolerationSeconds: 300
+      - effect: NoExecute
+        key: node.kubernetes.io/unreachable
+        operator: Exists
+        tolerationSeconds: 300
     {{- if .Values.imagePullSecret.name }}
     imagePullSecrets:
       - name: {{ .Values.imagePullSecret.name }}
